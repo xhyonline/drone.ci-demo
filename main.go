@@ -3,5 +3,5 @@ package main
 import "fmt"
 
 func main()  {
-	fmt.Println("myci123123123123")
+	fmt.Println("调试关闭验证")
 }
