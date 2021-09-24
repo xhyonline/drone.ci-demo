@@ -1,0 +1,87 @@
+kind: pipeline
+type: docker
+name: srv-usercenter # 改改就能用 全局替换 srv-usercenter
+
+
+steps:
+  # 编译阶段
+  - name: build
+    image: golang:1.16-alpine
+    volumes: # 将编译时将所需的依赖映射出来,避免下次构建时重新下载,当然如果你不需要,也可以把 volumes 删掉,大不了每次重新下载。请注意!!:挂载时需要在drone后台将 Trusted 勾上,具体路径请看下文的图片
+      - name: cache-go-deps
+        path: /go # 容器内的路径
+    commands:
+      - go version
+      - go env -w GOPROXY=https://goproxy.cn,direct
+      - go build -o app main.go
+  # 压缩编译后的二进制文件
+  - name: upx
+    image: cnbattle/drone-upx
+    settings:
+      save_file: app_upx
+      original_file: app
+      level: 9
+  # 将编译产物 rsync 到宿主机
+  - name: rsync
+    image: drillster/drone-rsync # 文档自行查看 drone 这个插件
+    settings:
+      hosts:
+        from_secret: host # host 就是在drone中设置的 secret 选项,具体看下面的图片
+      user:
+        from_secret: user
+      key:
+        from_secret: key # 请使用 ssh-keygen -t rsa 生成秘钥对,然后将公钥拷贝到要操纵的目标器的/root/.ssh/authorized_keys里,再把私钥黏贴到 drone 后台的secret里
+      source: ./app_upx
+      target: /build/srv-usercenter # 我们提前需要在目标机器上创建 build目录
+      delete: true
+      script:
+        - tree /build
+        - /build/srv-usercenter # 你可以在目标机器上执行重启命令来完成CI
+    when:
+      status:
+        - success
+
+# 将容器内挂载出来,和构建阶段的 volumes 承接
+volumes:
+  - name: cache-go-deps
+    host:
+      path: /var/local/drone-cache/repo/go-cache # 宿主机的路径
+
+trigger:
+  branch:
+    - master
+  event:
+    - push
+
+---
+## 以下是构建完成后发送通知的事件
+kind: pipeline
+type: docker
+name: notify
+
+clone:
+  disable: true
+
+steps:
+  - name: send
+    image: plugins/webhook
+    settings:
+      username:
+        from_secret: username
+      password:
+        from_secret: password
+      method: POST
+      urls: http://url/webhook # 请将 url 自行修改成你自己的
+      content_type: application/json
+      template: |
+        {
+          "owner": "{{ repo.owner }}",
+          "repo": "{{ repo.name }}",
+          "status": "{{ build.status }}",
+        }
+trigger:
+  status:
+    - success
+    - failure
+
+depends_on: [srv-usercenter]
